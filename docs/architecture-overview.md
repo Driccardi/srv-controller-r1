@@ -4,7 +4,6 @@ The Swift Cabin Controller coordinates sensors, relays, and cloud workflows to s
 
 ## Cabin Device
 - **Hardware platform:** Waveshare ESP32-S3 board with six onboard relays and headers for auxiliary sensors.
-- **Non-volatile storage:** 16 MB QSPI flash carved into firmware and NVS partitions. The firmware mirrors configuration snapshots and last-known relay latch states into NVS so settings survive total power loss; the cloud `settings` table remains the source of truth and can push refresh commands after a brownout.
 - **Power model:** Device wakes from deep sleep every 5 minutes (default), performs telemetry/command exchange, then returns to deep sleep to save battery. The interval is managed remotely via the cloud `settings` table so operators can lengthen or shorten the cadence without reflashing firmware.
 - **Sensors:**
   - DHT11/22 for temperature/humidity in key cabin zones.
@@ -28,27 +27,7 @@ The Swift Cabin Controller coordinates sensors, relays, and cloud workflows to s
 3. **Execution/Ack (future)** – Device applies commands, reports success/failure via `/cabin/commands/ack` for traceability.
 4. **Firmware Check (future)** – Device queries `/cabin/firmware/check` to determine whether an OTA update should be downloaded.
 
-Refer to [`docs/api-payloads.md`](./api-payloads.md) for the authoritative JSON payload definitions that power these flows.
-
-### Telemetry Expectations
-- Every wake cycle, the firmware reports a snapshot containing:
-  - **System envelope:** `device_id`, timestamp, firmware version, and coarse `system_status` (`nominal`, `failsafe`, etc.).
-  - **Sensor suites:** External/room temperatures, humidity, cistern level, BMS voltages/temps, generator runtime, heater states, and panel voltage in structured sub-objects.
-  - **Relay state echo:** Whether each logical relay (generator latch, lighting relays, pumps, valves) is currently latched on/off.
-  - **Command delivery evidence:** `last_command_id` and the `last_command_payload` body the device executed.
-  - **Settings reflection:** Key configuration values (telemetry cadence, thresholds) so the cloud can detect drift.
-- n8n persists both the raw JSON payload and per-metric rows so dashboards can render time-series charts and evaluate alarms.
-
-### Command Expectations
-- The `/cabin/commands` response is ordered by priority and includes redundant safety metadata:
-  - `redundancy_key` lets firmware deduplicate instructions when the cloud resends a command for reliability.
-  - `priority` and `expires_at` guide execution ordering and drop stale intent.
-  - Commands span heaters, generator modes, cistern fill bands, battery heater overrides, lighting scenes, future solar actuator control, and a `settings_sync` carrier for updated configuration.
-- Firmware should echo the entire `command` entry inside telemetry until a matching `/cabin/commands/ack` confirms success.
-
 ## Safety Considerations
 - Latching relays with auxiliary contacts provide verification of generator state.
-- Critical configuration (telemetry interval, alarm thresholds, preferred lighting scene, last safe relay map) is mirrored into the ESP32's flash-backed NVS region on each successful command sync so it can rehydrate deterministic outputs even if Wi-Fi or grid power disappears.
 - Local LCD keypad (future) enables on-site overrides and safe-mode operation if cloud connectivity is lost.
 - Automation rules will require human approval for high-impact actions such as generator starts until end-to-end testing is complete.
-- Per-metric alarm limits stored in the database are enforced in both n8n and firmware to prevent heaters, pumps, or actuators from overshooting safe operating ranges.
