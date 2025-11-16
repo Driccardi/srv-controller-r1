@@ -1,0 +1,228 @@
+{
+  "name": "Cabin Telemetry Ingest",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cabin/telemetry",
+        "responseMode": "lastNode",
+        "options": {
+          "responseContentType": "application/json"
+        }
+      },
+      "id": "telemetry-webhook",
+      "name": "Telemetry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const required = ['deviceId','authToken','systemStatus','firmwareVersion','metrics'];\nrequired.forEach(key => {\n  if (!items[0].json[key]) {\n    throw new Error(`Missing ${key} in payload`);\n  }\n});\nreturn items;"
+      },
+      "id": "validate-payload",
+      "name": "Validate Payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE devices SET last_seen_at = NOW(), firmware_version = '{{$json.firmwareVersion}}', system_status = '{{$json.systemStatus}}', last_command_id = COALESCE('{{$json.lastCommandId}}', last_command_id) WHERE id = '{{$json.deviceId}}';"
+      },
+      "id": "update-device",
+      "name": "Update Device",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [780, 140],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "telemetry",
+        "columns": "device_id, received_at, payload",
+        "values": "{{$json.deviceId}}, NOW(), {{$json | json}}"
+      },
+      "id": "insert-telemetry",
+      "name": "Insert Telemetry Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [780, 300],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const metrics = $json.metrics || {};\nconst rows = Object.entries(metrics).map(([key, value]) => ({\n  json: {\n    device_id: $json.deviceId,\n    metric_key: key,\n    metric_value: value.value,\n    unit: value.unit || null,\n    captured_at: new Date().toISOString(),\n    alarm_low: value.alarmLow ?? null,\n    alarm_high: value.alarmHigh ?? null\n  }\n}));\nreturn rows.length ? rows : [{json: {}}];"
+      },
+      "id": "explode-metrics",
+      "name": "Explode Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "telemetry_measurements",
+        "columns": "device_id, metric_key, metric_value, unit, captured_at",
+        "values": "{{$json.device_id}}, {{$json.metric_key}}, {{$json.metric_value}}, {{$json.unit}}, {{$json.captured_at}}"
+      },
+      "id": "insert-measurements",
+      "name": "Insert Measurements",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1300, 300],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.metric_value}}",
+              "operation": "smaller",
+              "value2": "={{$json.alarm_low}}"
+            },
+            {
+              "value1": "={{$json.metric_value}}",
+              "operation": "larger",
+              "value2": "={{$json.alarm_high}}"
+            }
+          ]
+        }
+      },
+      "id": "check-alarms",
+      "name": "Check Alarm Band",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://hooks.slack.com/services/placeholder",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"text\": \"Alarm {{ $json.metric_key }} breached on device {{ $json.device_id }} ({{ $json.metric_value }})\"\n}"
+      },
+      "id": "send-alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1820, 260]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { status: 'ok', received: $json.metric_key ? undefined : true } }];"
+      },
+      "id": "respond",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1820, 360]
+    }
+  ],
+  "connections": {
+    "Telemetry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Payload": {
+      "main": [
+        [
+          {
+            "node": "Update Device",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert Telemetry Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Telemetry Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Explode Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Metrics": {
+      "main": [
+        [
+          {
+            "node": "Insert Measurements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Measurements": {
+      "main": [
+        [
+          {
+            "node": "Check Alarm Band",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Alarm Band": {
+      "main": [
+        [
+          {
+            "node": "Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Alert": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

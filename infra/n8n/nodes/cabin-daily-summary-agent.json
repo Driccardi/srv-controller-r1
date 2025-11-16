@@ -1,0 +1,218 @@
+{
+  "name": "Cabin Daily Summary Agent",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": "custom",
+        "cronExpression": "0 7 * * *"
+      },
+      "id": "summary-cron",
+      "name": "07:00 Daily",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [220, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT json_agg(stats) AS metrics FROM (\n  SELECT metric_key, MIN(metric_value) AS min_value, MAX(metric_value) AS max_value, AVG(metric_value) AS avg_value\n  FROM telemetry_measurements\n  WHERE captured_at >= NOW() - INTERVAL '24 hours'\n  GROUP BY metric_key\n) stats;"
+      },
+      "id": "fetch-metrics",
+      "name": "Fetch Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 260],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT json_agg(t) AS events FROM (\n  SELECT 'command' AS type, id, command_type, queued_at, executed FROM commands WHERE queued_at >= NOW() - INTERVAL '24 hours'\n  UNION ALL\n  SELECT 'alert' AS type, id, details->>'subject' AS command_type, reported_at AS queued_at, (details->>'resolved')::boolean AS executed FROM command_executions\n) t;"
+      },
+      "id": "fetch-events",
+      "name": "Fetch Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 420],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const metricsInput = this.getInputData(0);\nconst eventsInput = this.getInputData(1);\nconst metrics = metricsInput?.[0]?.json?.metrics || metricsInput?.[0]?.json?.[0]?.metrics || [];\nconst events = eventsInput?.[0]?.json?.events || eventsInput?.[0]?.json?.[0]?.events || [];\nreturn [{ json: { metrics, events } }];"
+      },
+      "id": "assemble-data",
+      "name": "Assemble Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [780, 340]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "memoryKey": "daily_summary_context"
+      },
+      "id": "read-memory",
+      "name": "Read Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [1040, 220]
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = items[0]?.json || {};\nconst memoryInput = this.getInputData(1);\nconst memory = memoryInput?.[0]?.json?.memory || null;\nreturn [{ json: { ...payload, memory } }];"
+      },
+      "id": "attach-memory",
+      "name": "Attach Memory",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1040, 360]
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "See infra/n8n/agents/daily-summarizer.md for expectations. Reply with markdown.",
+        "messages": [
+          {
+            "text": "Telemetry stats: {{$json.metrics | json}}\nEvents: {{$json.events | json}}\nPrevious summary: {{$json.memory || 'none'}}",
+            "type": "user"
+          }
+        ],
+        "responseFormat": "text"
+      },
+      "id": "summary-agent",
+      "name": "Summary Agent",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1300, 360],
+      "credentials": {
+        "openAiApi": "Cabin OpenAI"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "memoryKey": "daily_summary_context",
+        "value": "={{$json.result}}"
+      },
+      "id": "write-memory",
+      "name": "Write Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [1560, 240]
+    },
+    {
+      "parameters": {
+        "fromEmail": "cabin@example.com",
+        "toEmail": "ops@example.com",
+        "subject": "Cabin daily summary",
+        "text": "={{$json.result}}",
+        "options": {}
+      },
+      "id": "email-summary",
+      "name": "Email Summary",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1560, 440]
+    }
+  ],
+  "connections": {
+    "07:00 Daily": {
+      "main": [
+        [
+          {
+            "node": "Fetch Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Metrics": {
+      "main": [
+        [
+          {
+            "node": "Assemble Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Events": {
+      "main": [
+        [
+          {
+            "node": "Assemble Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Assemble Data": {
+      "main": [
+        [
+          {
+            "node": "Attach Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Memory": {
+      "main": [
+        [
+          {
+            "node": "Attach Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Memory": {
+      "main": [
+        [
+          {
+            "node": "Summary Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summary Agent": {
+      "main": [
+        [
+          {
+            "node": "Write Memory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

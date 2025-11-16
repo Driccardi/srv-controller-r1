@@ -1,0 +1,330 @@
+{
+  "name": "Cabin Telemetry Interpreter Agent",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": "custom",
+        "cronExpression": "*/5 * * * *"
+      },
+      "id": "agent-cron",
+      "name": "Every Five Minutes",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [200, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH window AS (\n  SELECT device_id, metric_key, metric_value, unit, captured_at\n  FROM telemetry_measurements\n  WHERE metric_key IN ('environment.room1.temp_f','environment.room2.temp_f','battery.core.temp_c','power.backup12v.voltage','battery.heater.state')\n  ORDER BY captured_at DESC\n  LIMIT 20\n)\nSELECT json_agg(window) AS rows FROM window;"
+      },
+      "id": "fetch-window",
+      "name": "Fetch Metric Window",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [500, 320],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = items[0].json[0] || items[0].json;\nconst rows = payload?.rows || [];\nreturn [{\n  json: {\n    device_id: rows[0]?.device_id || 'swift-cabin-01',\n    window: rows,\n    generated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "format-window",
+      "name": "Format Window",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 320]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "memoryKey": "telemetry_interpreter_context"
+      },
+      "id": "read-memory",
+      "name": "Read Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [1020, 180]
+    },
+    {
+      "parameters": {
+        "functionCode": "const input = items[0]?.json || {};\nconst memoryInput = this.getInputData(1);\nconst memory = memoryInput?.[0]?.json?.memory || null;\nreturn [{ json: { ...input, memory } }];"
+      },
+      "id": "attach-memory",
+      "name": "Attach Memory",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1040, 320]
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "Follow the instructions in infra/n8n/agents/telemetry-interpreter.md. Analyze the provided telemetry window, consider the prior memory (if present), and respond with strict JSON containing summary, commands, and alerts.",
+        "messages": [
+          {
+            "text": "Device {{$json.device_id}} at {{$json.generated_at}}\nMetrics: {{$json.window | json}}\nPrevious memory: {{$json.memory || 'none'}}",
+            "type": "user"
+          }
+        ],
+        "responseFormat": "json"
+      },
+      "id": "telemetry-agent",
+      "name": "Telemetry Agent",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1280, 320],
+      "credentials": {
+        "openAiApi": "Cabin OpenAI"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const raw = items[0].json.result || items[0].json;\nconst parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\nconst deviceCtx = $items('Attach Memory', 0, 0)?.json || {};\nreturn [{ json: { ...parsed, device_id: deviceCtx.device_id || 'swift-cabin-01' } }];"
+      },
+      "id": "parse-agent",
+      "name": "Parse Agent Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1540, 320]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "memoryKey": "telemetry_interpreter_context",
+        "value": "={{$json.summary}}"
+      },
+      "id": "write-memory",
+      "name": "Write Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [1800, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.commands.length}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "has-commands",
+      "name": "Any Commands?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1800, 360]
+    },
+    {
+      "parameters": {
+        "functionCode": "const cmds = $json.commands || [];\nconst defaultDevice = $json.device_id || 'swift-cabin-01';\nreturn cmds.map(cmd => ({ json: { device_id: cmd.device_id || defaultDevice, command_key: cmd.command_key, parameters: cmd.parameters || {}, reason: cmd.reason || cmd.summary || 'agent-telemetry' } }));"
+      },
+      "id": "fanout-commands",
+      "name": "Fan Out Commands",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2060, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO commands (id, device_id, command_type, command_body, priority, redundancy_key) VALUES (gen_random_uuid(), COALESCE('{{$json.device_id}}','swift-cabin-01'), '{{$json.command_key}}', {{$json.parameters | json}}, 10, COALESCE('{{$json.reason}}','agent-telemetry'));"
+      },
+      "id": "insert-command",
+      "name": "Insert Command",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [2320, 320],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.alerts.length}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "has-alerts",
+      "name": "Any Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1800, 520]
+    },
+    {
+      "parameters": {
+        "functionCode": "const alerts = $json.alerts || [];\nreturn alerts.map(alert => ({ json: alert }));"
+      },
+      "id": "fanout-alerts",
+      "name": "Fan Out Alerts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2060, 520]
+    },
+    {
+      "parameters": {
+        "fromEmail": "cabin@example.com",
+        "toEmail": "ops@example.com",
+        "subject": "Cabin agent alert: {{$json.subject}}",
+        "text": "{{$json.message}}",
+        "options": {}
+      },
+      "id": "email-alert",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [2320, 520]
+    }
+  ],
+  "connections": {
+    "Every Five Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Metric Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Metric Window": {
+      "main": [
+        [
+          {
+            "node": "Format Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Window": {
+      "main": [
+        [
+          {
+            "node": "Attach Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Memory": {
+      "main": [
+        [
+          {
+            "node": "Attach Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Memory": {
+      "main": [
+        [
+          {
+            "node": "Telemetry Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telemetry Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Write Memory",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Any Commands?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Any Alerts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Commands?": {
+      "main": [
+        [
+          {
+            "node": "Fan Out Commands",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Commands": {
+      "main": [
+        [
+          {
+            "node": "Insert Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Alerts?": {
+      "main": [
+        [
+          {
+            "node": "Fan Out Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Alerts": {
+      "main": [
+        [
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "name": "Cabin Command Acknowledgements",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cabin/commands/ack",
+        "responseMode": "lastNode"
+      },
+      "id": "ack-webhook",
+      "name": "Ack Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { deviceId, results } = items[0].json;\nif (!deviceId || !Array.isArray(results)) {\n  throw new Error('Missing ack payload data');\n}\nreturn results.map(result => ({ json: {\n  deviceId,\n  commandId: result.commandId,\n  status: result.status || 'unknown',\n  message: result.message || '',\n  completedAt: result.completedAt || new Date().toISOString(),\n  diagnostics: result.diagnostics || {}\n} }));"
+      },
+      "id": "explode-acks",
+      "name": "Explode Acks",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET executed_at = '{{$json.completedAt}}'::timestamptz, executed_status = '{{$json.status || \"unknown\"}}', executed_payload = '{{ JSON.stringify($json) }}'::jsonb WHERE id = '{{$json.commandId}}' AND device_id = '{{$json.deviceId}}';"
+      },
+      "id": "update-command",
+      "name": "Update Command",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [800, 260],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO command_executions (command_id, device_id, executed_status, executed_payload, acknowledged_at) VALUES ('{{$json.commandId}}', '{{$json.deviceId}}', '{{$json.status || \"unknown\"}}', '{{ JSON.stringify($json) }}'::jsonb, NOW());"
+      },
+      "id": "insert-execution",
+      "name": "Insert Execution Row",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1060, 260],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { status: 'acknowledged', count: items.length } }];"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1320, 260]
+    }
+  ],
+  "connections": {
+    "Ack Webhook": {
+      "main": [
+        [
+          {
+            "node": "Explode Acks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Acks": {
+      "main": [
+        [
+          {
+            "node": "Update Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Command": {
+      "main": [
+        [
+          {
+            "node": "Insert Execution Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Execution Row": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
