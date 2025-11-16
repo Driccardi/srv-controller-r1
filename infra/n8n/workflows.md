@@ -54,5 +54,15 @@ The `infra/n8n/nodes/` directory contains ready-to-import workflow JSON for each
 | Firmware update eligibility check + auditing | `infra/n8n/nodes/cabin-firmware-check.json` |
 | Manual settings administration with notification | `infra/n8n/nodes/cabin-settings-admin.json` |
 | Scheduled alarm-band scanning and notifications | `infra/n8n/nodes/cabin-alerting-router.json` |
+| Telemetry interpreter agent with memory + OpenAI chat node | `infra/n8n/nodes/cabin-telemetry-agent.json` |
+| Daily summarizer agent with 24-hour rollups | `infra/n8n/nodes/cabin-daily-summary-agent.json` |
+| Command reliability auditor agent | `infra/n8n/nodes/cabin-command-auditor.json` |
+
+Each export includes placeholder credential names (e.g., `Cabin Postgres`) and webhook paths that align with the documented API surface so they can be imported directly into n8n and wired to environment-specific secrets.
+
+## Agentic workflows
+- **Telemetry Interpreter** (`infra/n8n/agents/telemetry-interpreter.md` + `cabin-telemetry-agent.json`): Cron trigger every five minutes pulls the latest 20 thermal metrics, attaches scratchpad memory, invokes an OpenAI Chat node, and fans out any command suggestions into the `commands` table while emailing urgent alerts.
+- **Daily Operations Summarizer** (`infra/n8n/agents/daily-summarizer.md` + `cabin-daily-summary-agent.json`): 07:00 cron aggregates the previous 24 hours of telemetry and command history, feeds the agent with prior-day memory, and emails a markdown digest to operators.
+- **Command Reliability Auditor** (`infra/n8n/agents/command-auditor.md` + `cabin-command-auditor.json`): Hourly cron scans for stuck commands, lets the agent decide which to retry or cancel, bumps priority/redundancy keys via Postgres, and escalates repeated failures through email alerts.
 
 Each export includes placeholder credential names (e.g., `Cabin Postgres`) and webhook paths that align with the documented API surface so they can be imported directly into n8n and wired to environment-specific secrets.

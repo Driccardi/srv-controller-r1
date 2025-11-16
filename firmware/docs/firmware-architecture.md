@@ -28,7 +28,7 @@
 
 ## Configuration
 - Use `config.h` for compile-time defaults (device id, sensor pins, sleep interval). Ship with a 5-minute telemetry cadence that can be overridden by values fetched from the `settings` table via command payloads.
-- Persist runtime overrides (Wi-Fi creds, schedule) in NVS for OTA updates without rebuilds.
+- Persist runtime overrides (Wi-Fi creds, schedule) plus the last commanded relay map and failsafe scene identifier in NVS. Each time `/cabin/commands` delivers a settings block the firmware both applies the change immediately and writes it to NVS so the board can recover deterministic outputs after any power interruption without requiring an external SD/FRAM module.
 
 ## Testing Strategy
 - Unit test sensor conversions and relay sequencing using PlatformIO Unity tests.

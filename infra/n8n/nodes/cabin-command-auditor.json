@@ -1,0 +1,327 @@
+{
+  "name": "Cabin Command Reliability Auditor",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": "custom",
+        "cronExpression": "0 * * * *"
+      },
+      "id": "auditor-cron",
+      "name": "Hourly",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.*, d.last_seen_at FROM commands c JOIN devices d ON d.id = c.device_id WHERE c.executed = FALSE AND c.queued_at < NOW() - INTERVAL '10 minutes';"
+      },
+      "id": "fetch-stale",
+      "name": "Fetch Stale Commands",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [480, 300],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "memoryKey": "command_auditor_context"
+      },
+      "id": "read-memory",
+      "name": "Read Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [740, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const stale = items.map(item => item.json);\nconst memoryInput = this.getInputData(1);\nconst memory = memoryInput?.[0]?.json?.memory || null;\nreturn [{ json: { stale, memory } }];"
+      },
+      "id": "combine",
+      "name": "Combine Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [740, 360]
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "Use infra/n8n/agents/command-auditor.md. Respond with JSON.",
+        "messages": [
+          {
+            "text": "Pending commands: {{$json.stale | json}}\nPrevious interventions: {{$json.memory || 'none'}}",
+            "type": "user"
+          }
+        ],
+        "responseFormat": "json"
+      },
+      "id": "auditor-agent",
+      "name": "Auditor Agent",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1000, 360],
+      "credentials": {
+        "openAiApi": "Cabin OpenAI"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const raw = items[0].json.result || items[0].json;\nconst parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\nreturn [{ json: parsed }];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1260, 360]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "memoryKey": "command_auditor_context",
+        "value": "={{$json.summary}}"
+      },
+      "id": "write-memory",
+      "name": "Write Memory",
+      "type": "n8n-nodes-base.memory",
+      "typeVersion": 1,
+      "position": [1520, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const rescues = $json.rescuedCommandIds || [];\nreturn rescues.map(id => ({ json: { id } }));"
+      },
+      "id": "fanout-rescue",
+      "name": "Fan Out Rescues",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1520, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET priority = 10, queued_at = NOW(), redundancy_key = COALESCE(redundancy_key || '-retry','agent-retry') WHERE id = '{{$json.id}}';"
+      },
+      "id": "bump-command",
+      "name": "Bump Command",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1780, 320],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const cancelled = $json.cancelledCommandIds || [];\nreturn cancelled.map(id => ({ json: { id } }));"
+      },
+      "id": "fanout-cancel",
+      "name": "Fan Out Cancels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1520, 440]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET executed = TRUE WHERE id = '{{$json.id}}';"
+      },
+      "id": "cancel-command",
+      "name": "Cancel Command",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1780, 440],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.alerts.length}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "has-alerts",
+      "name": "Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1520, 520]
+    },
+    {
+      "parameters": {
+        "functionCode": "const alerts = $json.alerts || [];\nreturn alerts.map(alert => ({ json: alert }));"
+      },
+      "id": "fanout-alerts",
+      "name": "Fan Out Alerts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1780, 520]
+    },
+    {
+      "parameters": {
+        "fromEmail": "cabin@example.com",
+        "toEmail": "ops@example.com",
+        "subject": "Command auditor alert: {{$json.subject}}",
+        "text": "{{$json.message}}",
+        "options": {}
+      },
+      "id": "email-alert",
+      "name": "Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [2040, 520]
+    }
+  ],
+  "connections": {
+    "Hourly": {
+      "main": [
+        [
+          {
+            "node": "Fetch Stale Commands",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Stale Commands": {
+      "main": [
+        [
+          {
+            "node": "Read Memory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Combine Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Memory": {
+      "main": [
+        [
+          {
+            "node": "Combine Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Data": {
+      "main": [
+        [
+          {
+            "node": "Auditor Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auditor Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Write Memory",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fan Out Rescues",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fan Out Cancels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alerts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Rescues": {
+      "main": [
+        [
+          {
+            "node": "Bump Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Cancels": {
+      "main": [
+        [
+          {
+            "node": "Cancel Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alerts?": {
+      "main": [
+        [
+          {
+            "node": "Fan Out Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Alerts": {
+      "main": [
+        [
+          {
+            "node": "Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

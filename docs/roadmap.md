@@ -22,6 +22,7 @@
 - Introduce OTA firmware update workflow with signed binaries and rollback slot management.
 - Deploy optional local LCD/UI for manual overrides and safe-mode.
 - Design two-axis solar array controllers with optional manual "snow dump" overrides and remote jog modes so operators can reset panels after storms while keeping autonomous tracking the default.
+- Land the AI agent workflows (telemetry interpreter, daily summarizer, and command reliability auditor) so n8n can auto-remediate minor issues and escalate anomalies without human polling.
 
 ## Phase 4 – Hardening & Deployment
 - End-to-end soak testing with simulated sensor inputs and relay loads.
