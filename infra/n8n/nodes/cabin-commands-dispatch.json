@@ -1,0 +1,149 @@
+{
+  "name": "Cabin Command Dispatcher",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "cabin/commands",
+        "responseMode": "lastNode",
+        "options": {
+          "responseContentType": "application/json"
+        }
+      },
+      "id": "commands-webhook",
+      "name": "Commands Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { deviceId, authToken } = items[0].json;\nif (!deviceId || !authToken) {\n  throw new Error('Missing device credentials');\n}\nreturn items;"
+      },
+      "id": "validate-request",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, command_type, parameters, priority, expires_at, redundancy_key, requires_ack FROM commands WHERE device_id = '{{$json.deviceId}}' AND executed_at IS NULL AND reserved_at IS NULL AND cancelled_at IS NULL ORDER BY priority DESC, queued_at ASC LIMIT 25;"
+      },
+      "id": "fetch-commands",
+      "name": "Fetch Commands",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [780, 220],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE commands SET reserved_at = NOW() WHERE id IN ({{$json.idsSql}});"
+      },
+      "id": "reserve-commands",
+      "name": "Reserve Commands",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1040, 220],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const rows = items[0].json;\nconst ids = rows.map(r => r.id);\nconst idsSql = ids.length ? ids.map(id => `\\'${id}\\'`).join(',') : 'NULL';\nreturn [{ json: { ids, commands: rows, idsSql } }];"
+      },
+      "id": "collect-ids",
+      "name": "Collect IDs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [780, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { commands: $json.commands || [] } }];"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1040, 420]
+    }
+  ],
+  "connections": {
+    "Commands Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Fetch Commands",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Collect IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Commands": {
+      "main": [
+        [
+          {
+            "node": "Collect IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect IDs": {
+      "main": [
+        [
+          {
+            "node": "Reserve Commands",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Commands": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

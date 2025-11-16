@@ -1,0 +1,112 @@
+{
+  "name": "Cabin Alerting Router",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": "custom",
+        "cronExpression": "*/5 * * * *"
+      },
+      "id": "schedule",
+      "name": "Five Minute Scan",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [220, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT m.device_id, m.metric_key, m.metric_value, dm.alarm_low, dm.alarm_high, m.captured_at FROM telemetry_measurements m JOIN device_metrics dm ON m.device_id = dm.device_id AND m.metric_key = dm.metric_key WHERE (m.metric_value < dm.alarm_low OR m.metric_value > dm.alarm_high) AND m.captured_at > NOW() - INTERVAL '10 minutes';"
+      },
+      "id": "fetch-breaches",
+      "name": "Fetch Breaches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 240],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "if (Array.isArray(items[0]?.json)) {\n  return items[0].json.map(row => ({ json: row }));\n}\nreturn items;"
+      },
+      "id": "fan-out",
+      "name": "Fan Out",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [800, 240]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://hooks.slack.com/services/placeholder",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"text\": \"Metric {{ $json.metric_key }} breached on {{ $json.device_id }}: value {{ $json.metric_value }} (limits {{ $json.alarm_low }}-{{ $json.alarm_high }})\"\n}"
+      },
+      "id": "slack",
+      "name": "Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "cabin@example.com",
+        "toEmail": "ops@example.com",
+        "subject": "Cabin alert: {{$json.metric_key}}",
+        "text": "Device {{$json.device_id}} breached {{$json.metric_key}} with value {{$json.metric_value}}",
+        "options": {}
+      },
+      "id": "email",
+      "name": "Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1080, 300]
+    }
+  ],
+  "connections": {
+    "Five Minute Scan": {
+      "main": [
+        [
+          {
+            "node": "Fetch Breaches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Breaches": {
+      "main": [
+        [
+          {
+            "node": "Fan Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out": {
+      "main": [
+        [
+          {
+            "node": "Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
