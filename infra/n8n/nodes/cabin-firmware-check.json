@@ -1,0 +1,88 @@
+{
+  "name": "Cabin Firmware Check",
+  "active": false,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cabin/firmware/check",
+        "responseMode": "lastNode"
+      },
+      "id": "firmware-webhook",
+      "name": "Firmware Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, version, download_url, sha256 FROM firmware_versions WHERE hardware_revision = '{{$json.hardwareRevision}}' AND status = 'approved' ORDER BY created_at DESC LIMIT 1;"
+      },
+      "id": "fetch-firmware",
+      "name": "Fetch Latest Firmware",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 200],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO firmware_audit (device_id, current_version, requested_version, checked_at) VALUES ('{{$json.deviceId}}', '{{$json.currentVersion}}', (SELECT version FROM firmware_versions WHERE hardware_revision = '{{$json.hardwareRevision}}' AND status = 'approved' ORDER BY created_at DESC LIMIT 1), NOW());"
+      },
+      "id": "audit",
+      "name": "Audit Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 360],
+      "credentials": {
+        "postgres": "Cabin Postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const latest = items[0]?.json?.[0];\nconst request = $items('Firmware Webhook')[0].json;\nif (!latest) {\n  return [{ json: { upToDate: true } }];\n}\nconst needsUpdate = latest.version !== request.currentVersion;\nreturn [{ json: {\n  upToDate: !needsUpdate,\n  downloadUrl: needsUpdate ? latest.download_url : null,\n  version: needsUpdate ? latest.version : request.currentVersion,\n  checksum: needsUpdate ? latest.sha256 : null\n} }];"
+      },
+      "id": "compare",
+      "name": "Compare Versions",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [800, 200]
+    }
+  ],
+  "connections": {
+    "Firmware Webhook": {
+      "main": [
+        [
+          {
+            "node": "Fetch Latest Firmware",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Audit Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Latest Firmware": {
+      "main": [
+        [
+          {
+            "node": "Compare Versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
